@@ -75,7 +75,7 @@ the widget knows which agents exist.
 |---|---|---|
 | `claude` | `~/.claude/sessions/<pid>.json`, the peer-session record the CLI maintains, plus the `ai-title` in the transcript | yes — the record has a real status |
 | `herdr` | `herdr api snapshot`: every agent the [herdr](https://herdr.dev) multiplexer hosts, whatever kind | yes — herdr reports the same four states |
-| `pi` | Running `pi` processes plus the newest transcript under `~/.pi/agent/sessions/<cwd-slug>/` | no — inferred from transcript mtime |
+| `processes` | Any known agent CLI running in a plain terminal: presence and cwd from procfs, title from the terminal window, state from herdr's `osc_title` rules applied to that title | only if the agent puts it in its title |
 
 herdr itself learns an agent's state two ways, which is worth knowing when a
 state looks wrong. Its fallback is screen scraping: per-agent rule manifests
@@ -114,10 +114,28 @@ shared helpers: `shorten_dir`, `alive`, `cwd_of`, `newest`, and
 `state_from_mtime`, which is the fallback for agents that keep no status of
 their own.
 
-The quickest route for an agent with no state on disk is to run it inside
-herdr — it supports 20-odd agent kinds (codex, gemini, opencode, copilot, …)
-and reports a real status for each, so the `herdr` collector covers them with
-no new code.
+Most agents need no collector at all. `processes` already finds them: add
+`<agent>:<process-name>` to `~/.config/omarchy/agent-sessions/processes.conf`
+and the CLI shows up with its directory and title. Write a collector only when
+an agent keeps state worth reading that neither its window title nor herdr
+exposes.
+
+### Where state comes from, per situation
+
+| Agent runs… | State from | Blocked? |
+|---|---|---|
+| Claude, anywhere | its own session record | yes |
+| under herdr, integration installed | the in-agent reporter over herdr's socket | yes |
+| under herdr, no integration | herdr's screen scraping | working/idle |
+| plain terminal | window title + herdr's `osc_title` rules | only if the title says so |
+| no window at all (detached, ssh) | nothing — presence only | no |
+
+Nothing disappears outside herdr; what degrades is the state, and it degrades
+to "running", never to a guess. To sharpen a specific agent, drop an
+`osc_title` rule into `~/.config/herdr/agent-detection/<agent>.toml`: herdr
+reads that override, and so does this widget. pi is the obvious candidate — its
+upstream manifest has one rule and its title carries no state marker, so a
+plain-terminal pi reads as idle until you install its herdr integration.
 
 ## herdr-hosted sessions
 

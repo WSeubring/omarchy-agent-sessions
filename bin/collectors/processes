@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Any known agent CLI running in a plain terminal.
+#
+# One table of process names covers every agent — there is no per-agent logic
+# here. Presence and working directory come from procfs; the title comes from
+# the terminal window the process sits in; the state comes from herdr's own
+# osc_title rules applied to that title (see lib/title-state.py), so nothing is
+# guessed. An agent whose title says nothing is reported as idle: it is running,
+# and claiming more than that would be invention.
+#
+# Agents running under herdr are covered better by the herdr collector, which
+# gets state pushed to it by the in-agent reporter; this one is the fallback for
+# everything outside it.
+set -uo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+source "$ROOT/lib/collector.sh"
+
+# agent:process-name. Override or extend in
+# ~/.config/omarchy/agent-sessions/processes.conf, one "agent:process" per line.
+AGENT_PROCESSES=(
+  claude:claude
+  pi:pi
+  codex:codex
+  gemini:gemini
+  opencode:opencode
+  copilot:copilot
+  amp:amp
+  droid:droid
+  cursor:cursor-agent
+  grok:grok
+  hermes:hermes
+  kimi:kimi
+  crush:crush
+  aider:aider
+)
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/agent-sessions/processes.conf"
+if [[ -f $CONF ]]; then
+  while IFS= read -r line; do
+    line=${line%%#*}
+    line=$(tr -d '[:space:]' <<<"$line")
+    [[ -n $line && $line == *:* ]] && AGENT_PROCESSES+=("$line")
+  done <"$CONF"
+fi
+
+# One call for every window: the title lives on the terminal, several process
+# generations above the agent itself.
+declare -A WINDOW_TITLE=()
+while IFS=$'\t' read -r wpid wtitle; do
+  [[ -n $wpid ]] && WINDOW_TITLE[$wpid]=$wtitle
+done < <(hyprctl -j clients 2>/dev/null | jq -r '.[] | "\(.pid)\t\(.title)"' 2>/dev/null)
+
+title_for_pid() {
+  local pid=$1
+  for _ in 1 2 3 4 5 6; do
+    [[ -n $pid && $pid != 1 ]] || break
+    [[ -n ${WINDOW_TITLE[$pid]:-} ]] && { printf '%s' "${WINDOW_TITLE[$pid]}"; return 0; }
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+  done
+  return 1
+}
+
+# Titles carry their state as a prefix glyph; the words after it are the subject.
+strip_state_glyph() {
+  sed -E 's/^[[:space:]]*[\xE2\xA0\x80-\xE2\xA3\xBF◐◑◒◓✳✻✽·][[:space:]]*//' <<<"$1"
+}
+
+now=$(date +%s)
+records=()
+
+for entry in "${AGENT_PROCESSES[@]}"; do
+  agent=${entry%%:*}
+  process=${entry#*:}
+
+  while read -r pid; do
+    [[ -n $pid ]] || continue
+    [[ $pid == "$$" ]] && continue
+    alive "$pid" || continue
+
+    # This collector and its helpers can share a name with the agent they look
+    # for; a shell wearing the name is not the agent.
+    exe=$(basename "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" 2>/dev/null)
+    [[ $exe == bash || $exe == sh || $exe == dash || $exe == zsh || $exe == jq ]] && continue
+
+    cwd=$(cwd_of "$pid")
+    [[ -n $cwd ]] || continue
+
+    title=$(title_for_pid "$pid" || true)
+    state=$("$ROOT/lib/title-state.py" "$agent" "$title" 2>/dev/null)
+    [[ -n $state ]] || state="idle"
+
+    clean_title=$(strip_state_glyph "$title")
+    [[ -n $clean_title ]] || clean_title="$agent session"
+
+    records+=("$(jq -nc \
+      --arg agent "$agent" \
+      --argjson pid "$pid" \
+      --arg cwd "$cwd" \
+      --arg dir "$(shorten_dir "$cwd")" \
+      --arg title "$clean_title" \
+      --arg state "$state" \
+      --argjson started "$((now - $(stat -c %Y "/proc/$pid" 2>/dev/null || echo "$now")))" \
+      '{
+        agent: $agent,
+        # Lowest of the three sources: a title says less than a status report.
+        priority: 3,
+        pid: $pid,
+        name: ($agent + "-" + ($pid | tostring)),
+        cwd: $cwd,
+        dir: $dir,
+        title: $title,
+        state: $state,
+        raw: ("title:" + $state),
+        ageSec: 0,
+        startedSec: $started,
+        host: "window"
+      }')")
+  done < <(pgrep -x "$process" 2>/dev/null)
+done
+
+if [[ ${#records[@]} -eq 0 ]]; then
+  echo '[]'
+else
+  printf '%s\n' "${records[@]}" | jq -s '.'
+fi

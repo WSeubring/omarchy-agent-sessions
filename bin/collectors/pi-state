@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# pi sessions that report their own state.
+#
+# Reads what integrations/pi/agent-sessions-state.ts writes: pi holds its state
+# in memory only, so without that extension a plain-terminal pi can be seen
+# (the `processes` collector) but not read. With it, working/idle/blocked are
+# exact, in a terminal or under herdr alike.
+set -uo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+source "$ROOT/lib/collector.sh"
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-agent-sessions/pi"
+DONE_WINDOW_SEC="${DONE_WINDOW_SEC:-300}"
+
+[[ -d $STATE_DIR ]] || { echo '[]'; exit 0; }
+
+now=$(date +%s)
+records=()
+
+for file in "$STATE_DIR"/*.json; do
+  [[ -f $file ]] || continue
+  pid=$(jq -r '.pid // empty' "$file" 2>/dev/null)
+  # A crash skips the extension's cleanup, so the reader prunes.
+  if [[ -z $pid ]] || ! alive "$pid"; then
+    rm -f "$file"
+    continue
+  fi
+
+  session=$(jq -r '.sessionFile // empty' "$file")
+  title=""
+  if [[ -n $session && -f $session ]]; then
+    # The opening ask is the closest thing pi has to a subject line; Haiku turns
+    # it into something readable, cached per session. Take it from the first user
+    # message specifically — a raw grep for text would catch tool output too.
+    first=$(jq -rs 'map(select(.type == "message" and .message.role == "user"))
+      | .[0].message.content
+      | if type == "array" then (map(select(.type == "text").text) | join(" "))
+        elif type == "string" then . else "" end' "$session" 2>/dev/null | head -c 600)
+    [[ $first == "null" ]] && first=""
+    [[ -n $first ]] && title=$("$ROOT/bin/title-cache" "$session" "$first")
+    [[ -n $title ]] || title=${first:0:60}
+  fi
+
+  records+=("$(jq -c \
+    --arg title "$title" \
+    --arg fallbackDir "$(shorten_dir "$(jq -r '.cwd // ""' "$file")")" \
+    --argjson now "$now" \
+    --argjson doneWindow "$DONE_WINDOW_SEC" \
+    '
+    ($now - (.updatedAt // 0)) as $age
+    | ($now - (.finishedAt // 0)) as $sinceTurn
+    | {
+        agent: "pi",
+        # The session reporting on itself outranks anything inferred about it.
+        priority: 0,
+        pid: .pid,
+        sessionId: .sessionFile,
+        name: ("pi-" + (.pid | tostring)),
+        cwd: (.cwd // ""),
+        dir: $fallbackDir,
+        title: $title,
+        ageSec: (if (.finishedAt // 0) > 0 then $sinceTurn else $age end),
+        raw: .state,
+        state: (
+          if .state == "blocked" then "blocked"
+          elif .state == "working" then "working"
+          elif (.finishedAt // 0) > 0 and $sinceTurn <= $doneWindow then "done"
+          else "idle" end
+        )
+      }
+    ' "$file")")
+done
+
+if [[ ${#records[@]} -eq 0 ]]; then
+  echo '[]'
+else
+  printf '%s\n' "${records[@]}" | jq -s '.'
+fi

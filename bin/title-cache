@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# A short human title for a session, generated once and cached.
+#
+#   title-cache <key> <text>   ->   the title, or nothing yet
+#
+# Claude Code titles its own sessions; most agents do not, which leaves rows
+# reading "pi session". This asks Haiku for a title for the session's first
+# prompt and caches it by key, so the cost is one small call per session, ever.
+#
+# It never blocks the caller: a cache miss prints nothing and generation happens
+# in the background, so the row keeps its fallback title until the next refresh
+# picks the cached one up. Set AGENT_TITLES=0 to turn the whole thing off.
+set -uo pipefail
+
+MODEL="${AGENT_TITLE_MODEL:-claude-haiku-4-5-20251001}"
+CACHE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-agent-sessions/titles"
+
+key=${1:-}
+text=${2:-}
+[[ -n $key ]] || exit 0
+[[ ${AGENT_TITLES:-1} == 0 ]] && exit 0
+
+hash=$(printf '%s' "$key" | sha1sum | cut -d' ' -f1)
+cache="$CACHE_DIR/$hash"
+lock="$cache.lock"
+
+if [[ -f $cache ]]; then
+  cat "$cache"
+  exit 0
+fi
+
+[[ -n $text ]] || exit 0
+command -v claude >/dev/null 2>&1 || exit 0
+
+mkdir -p "$CACHE_DIR"
+
+# mkdir is the atomic bit: several collector runs overlap, and one title is
+# worth one call. A lock older than five minutes is a crashed run, not a busy one.
+if [[ -d $lock ]]; then
+  lock_age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+  ((lock_age < 300)) && exit 0
+  rmdir "$lock" 2>/dev/null
+fi
+mkdir "$lock" 2>/dev/null || exit 0
+
+(
+  trap 'rmdir "$lock" 2>/dev/null' EXIT
+  # Truncated: a title only needs the opening ask, and a whole prompt is a lot
+  # of tokens to spend on five words.
+  # Anything a person types at an agent is fair game — a question, a bug report,
+  # half a thought — so the instruction must never invite a refusal.
+  prompt="Below is the first thing someone said to a coding agent. Name that
+session in 3-6 words, as a label a person would recognise in a list.
+
+Rules: reply with the label alone, no quotes, no trailing period, no preamble,
+no commentary. Never decline: if the text is vague, label it literally.
+
+Text: ${text:0:600}"
+
+  title=$(timeout 45 claude -p --model "$MODEL" "$prompt" 2>/dev/null |
+    head -1 | sed 's/^["'"'"']//; s/["'"'"']$//; s/[[:space:]]*$//; s/\.$//')
+
+  # A model that answers with a paragraph, or an error, is not a title.
+  if [[ -n $title && ${#title} -le 80 ]]; then
+    printf '%s' "$title" >"$cache"
+  fi
+) >/dev/null 2>&1 &
+
+exit 0

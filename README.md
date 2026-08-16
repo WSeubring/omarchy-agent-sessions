@@ -15,6 +15,7 @@ Claude Code and pi work today; other agents are a collector away.
 git clone https://github.com/WSeubring/omarchy-agent-sessions.git
 cd omarchy-agent-sessions
 ./install.sh                 # links it as <user>.sessions and puts it on the bar
+./install.sh --pi            # …and installs the pi reporter (see below)
 ```
 
 The script links the checkout into `~/.config/omarchy/plugins/`, so edits are
@@ -75,6 +76,7 @@ the widget knows which agents exist.
 |---|---|---|
 | `claude` | `~/.claude/sessions/<pid>.json`, the peer-session record the CLI maintains, plus the `ai-title` in the transcript | yes — the record has a real status |
 | `herdr` | `herdr api snapshot`: every agent the [herdr](https://herdr.dev) multiplexer hosts, whatever kind | yes — herdr reports the same four states |
+| `pi-state` | What the pi reporter extension writes to `~/.local/state/omarchy-agent-sessions/pi/` | yes — pi reports for itself |
 | `processes` | Any known agent CLI running in a plain terminal: presence and cwd from procfs, title from the terminal window, state from herdr's `osc_title` rules applied to that title | only if the agent puts it in its title |
 
 herdr itself learns an agent's state two ways, which is worth knowing when a
@@ -120,6 +122,31 @@ and the CLI shows up with its directory and title. Write a collector only when
 an agent keeps state worth reading that neither its window title nor herdr
 exposes.
 
+## Titles
+
+Claude names its own sessions; most agents do not, so a row would read
+`pi session`. Instead the first thing you said in that session goes to Haiku
+once, through `bin/title-cache`, and the answer is cached by session for good —
+one small call per session, ever. A cache miss never blocks: the row keeps its
+fallback until the next refresh picks the title up. `AGENT_TITLES=0` turns it
+off, `AGENT_TITLE_MODEL` picks a different model.
+
+## The pi reporter
+
+pi holds its state in memory: the terminal title never changes, and the
+transcript on disk cannot separate a long tool call from a finished turn. So pi
+reports for itself. `integrations/pi/agent-sessions-state.ts` hooks
+`session_start`, `agent_start`, `agent_settled` and `project_trust`, and writes
+one small JSON file per session — the same design as herdr's integration, minus
+the multiplexer, which is what makes it work in a plain terminal.
+
+Install with `./install.sh --pi`, or copy the file into
+`~/.pi/agent/extensions/` yourself; delete it to undo. Without it, pi still
+appears via the `processes` collector, just without a readable state.
+
+The same pattern fits any agent with an extension API. Write the state file,
+and `pi-state` is the model for the collector that reads it.
+
 ### Where state comes from, per situation
 
 | Agent runs… | State from | Blocked? |
@@ -127,15 +154,18 @@ exposes.
 | Claude, anywhere | its own session record | yes |
 | under herdr, integration installed | the in-agent reporter over herdr's socket | yes |
 | under herdr, no integration | herdr's screen scraping | working/idle |
+| pi with the reporter installed, anywhere | pi's own lifecycle events | yes, for trust prompts |
 | plain terminal | window title + herdr's `osc_title` rules | only if the title says so |
 | no window at all (detached, ssh) | nothing — presence only | no |
 
 Nothing disappears outside herdr; what degrades is the state, and it degrades
-to "running", never to a guess. To sharpen a specific agent, drop an
-`osc_title` rule into `~/.config/herdr/agent-detection/<agent>.toml`: herdr
-reads that override, and so does this widget. pi is the obvious candidate — its
-upstream manifest has one rule and its title carries no state marker, so a
-plain-terminal pi reads as idle until you install its herdr integration.
+to "running", never to a guess. Two ways to sharpen a specific agent: drop an
+`osc_title` rule into `~/.config/herdr/agent-detection/<agent>.toml` (herdr
+reads that override, and so does this widget), or have the agent report for
+itself the way the pi reporter does. The title route only works if the agent
+puts state in its title — measured against a live session, pi never does: it
+stays `π - <dir>` through working, blocked and idle alike, which is why the
+reporter exists.
 
 ## herdr-hosted sessions
 

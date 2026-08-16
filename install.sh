@@ -7,7 +7,20 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-plugin_id="${1:-${USER}.sessions}"
+
+# --pi also drops the pi reporter extension into ~/.pi/agent/extensions/, which
+# is what lets a plain-terminal pi report working/idle instead of merely being
+# seen. It writes into pi's config, so it is opt-in.
+with_pi=false
+args=()
+for arg in "$@"; do
+  case $arg in
+    --pi) with_pi=true ;;
+    *) args+=("$arg") ;;
+  esac
+done
+
+plugin_id="${args[0]:-${USER}.sessions}"
 target="$HOME/.config/omarchy/plugins/$plugin_id"
 
 mkdir -p "$HOME/.config/omarchy/plugins"
@@ -19,6 +32,16 @@ fi
 
 ln -sfn "$repo" "$target"
 echo "linked $target -> $repo"
+
+if $with_pi; then
+  pi_dir="$HOME/.pi/agent/extensions"
+  if [[ -d $pi_dir ]]; then
+    cp "$repo/integrations/pi/agent-sessions-state.ts" "$pi_dir/"
+    echo "installed the pi reporter into $pi_dir (delete the file to undo)"
+  else
+    echo "skipping --pi: $pi_dir does not exist" >&2
+  fi
+fi
 
 if command -v omarchy >/dev/null 2>&1; then
   omarchy bar put "$plugin_id" --before omarchy.tray >/dev/null 2>&1 ||

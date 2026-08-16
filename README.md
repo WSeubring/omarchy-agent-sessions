@@ -77,6 +77,19 @@ the widget knows which agents exist.
 | `herdr` | `herdr api snapshot`: every agent the [herdr](https://herdr.dev) multiplexer hosts, whatever kind | yes — herdr reports the same four states |
 | `pi` | Running `pi` processes plus the newest transcript under `~/.pi/agent/sessions/<cwd-slug>/` | no — inferred from transcript mtime |
 
+herdr itself learns an agent's state two ways, which is worth knowing when a
+state looks wrong. Its fallback is screen scraping: per-agent rule manifests
+(`~/.local/state/herdr/agent-detection/remote/<agent>.toml`, fetched from
+herdr.dev) match the OSC title and regions of the visible buffer. pi's manifest
+carries a single rule — the literal `Working...` — so scraping alone never
+yields "blocked" for it. The accurate path is `herdr integration install <agent>`,
+which drops a reporter into the agent itself (`~/.pi/agent/extensions/herdr-agent-state.ts`
+for pi, `~/.claude/hooks/herdr-agent-state.sh` for Claude, plugins for opencode
+and hermes). Those hook the agent's own lifecycle events and push
+`pane.report_agent` over herdr's socket, so blocked/working/idle come from the
+agent rather than from its pixels. `herdr integration status` shows what is
+wired up.
+
 Two sightings of one session (its own collector and the multiplexer hosting it)
 merge into a single row, joined on pid, then session id, then pane. A `priority`
 field decides who wins a contested field: an agent that keeps a real status

@@ -39,7 +39,13 @@ for file in "$STATE_DIR"/*.json; do
         elif type == "string" then . else "" end' "$session" 2>/dev/null | head -c 600)
     [[ $first == "null" ]] && first=""
     [[ -n $first ]] && title=$("$ROOT/bin/title-cache" "$session" "$first")
-    [[ -n $title ]] || title=${first:0:60}
+    # Until the generated title lands (a few seconds after the first prompt), or
+    # for good if generation is off, show the prompt itself — clipped, because a
+    # bar panel row is not the place to reread what you typed.
+    if [[ -z $title && -n $first ]]; then
+      first=${first//$'\n'/ }
+      if ((${#first} > 48)); then title="${first:0:48}…"; else title=$first; fi
+    fi
   fi
 
   records+=("$(jq -c \

@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Every coding-agent session running on this machine, as one JSON array.
+#
+# The work is done by the collectors in bin/collectors/: each one prints a JSON
+# array of session records for a single source, and this script merges, dedupes
+# and ranks them. Adding an agent means adding a collector; nothing here or in
+# the QML needs to know about it.
+#
+# Record contract (only `agent`, `state` and `title` are required):
+#   agent      "claude" | "pi" | "codex" | …    which CLI this is
+#   sessionId  the agent's own session id, when it has one
+#   name       short label for the session
+#   title      what it is working on
+#   cwd, dir   working directory, and its shortened form
+#   state      blocked | working | done | idle
+#   ageSec     seconds since the state last changed
+#   pid        process id, when the session is a local process
+#   paneId     herdr pane, when a multiplexer hosts it
+#   host       "window" | "herdr"
+set -uo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+COLLECTOR_DIR="$HERE/collectors"
+
+# A fixture next to the plugin stands in for the live sources, so bar styles can
+# be compared against states that are not currently happening. Delete to go live.
+DEMO_FILE="$HERE/../demo.json"
+if [[ -f $DEMO_FILE ]]; then
+  cat "$DEMO_FILE"
+  exit 0
+fi
+
+# AGENTS=claude,pi limits the run to those collectors; unset means all of them.
+requested=${AGENTS:-}
+
+want() {
+  [[ -z $requested ]] && return 0
+  [[ ,$requested, == *,$1,* ]]
+}
+
+records=()
+for collector in "$COLLECTOR_DIR"/*; do
+  [[ -x $collector ]] || continue
+  name=$(basename "$collector")
+  want "$name" || continue
+  out=$("$collector" 2>/dev/null)
+  [[ -n $out ]] || continue
+  # A collector that prints garbage is skipped rather than breaking the widget.
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$out" || continue
+  records+=("$out")
+done
+
+[[ ${#records[@]} -gt 0 ]] || { echo '[]'; exit 0; }
+
+printf '%s\n' "${records[@]}" | jq -s '
+  add
+
+  # The same session can be seen twice: once by its own agent collector and once
+  # by the multiplexer hosting it. Merge those into one row. `priority` decides
+  # who wins a contested field (lower is better: an agent that keeps a real
+  # status beats one inferred from a terminal title), while everything else is
+  # filled in from whoever has it.
+  | group_by(
+      # The pid is the most reliable join: a session id only appears once the
+      # agent has written a transcript, and some agents never write one.
+      if .pid then "pid:" + (.pid | tostring)
+      elif .sessionId then "id:" + (.sessionId | tostring)
+      else "pane:" + (.paneId // "" | tostring) end
+    )
+  | map(
+      sort_by(.priority // 5)
+      | reduce .[] as $r ({}; ($r | with_entries(select(.value != null and .value != ""))) + .)
+    )
+
+  # Defaults for anything no collector filled in.
+  | map({host: "window", title: "untitled", agent: "agent", state: "idle", ageSec: 0} + .)
+
+  # Blocked first: those are the ones actually asking for a human.
+  | def rank: {blocked: 0, working: 1, done: 2, idle: 3}[.state] // 4;
+    sort_by(rank, .ageSec)
+'

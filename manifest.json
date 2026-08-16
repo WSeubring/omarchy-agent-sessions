@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "id": "wseubring.sessions",
+  "name": "Agent Sessions",
+  "version": "1.0.0",
+  "author": "Wesley Seubring",
+  "license": "MIT",
+  "description": "Live coding-agent sessions (Claude Code, pi, anything herdr hosts) in the Omarchy bar: state, directory and title.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "SessionsPanel.qml"
+  },
+  "barWidget": {
+    "displayName": "Agent Sessions",
+    "description": "One glyph per running agent with a count of the ones that need you; click for a panel listing every session with its state, directory and title. Leaves the bar entirely when nothing is running.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 5,
+      "doneWindowSec": 300,
+      "showLabel": true,
+      "indicatorStyle": "groups",
+      "maxDots": 6,
+      "animateWorking": true
+    },
+    "schema": [
+      {
+        "key": "indicatorStyle",
+        "type": "enum",
+        "label": "Bar indicator style",
+        "options": [
+          "groups",
+          "dots",
+          "count",
+          "minimal"
+        ],
+        "defaultValue": "groups"
+      },
+      {
+        "key": "maxDots",
+        "type": "integer",
+        "label": "Dots style: how many sessions to draw before collapsing to +n",
+        "min": 1,
+        "max": 12,
+        "step": 1,
+        "defaultValue": 6
+      },
+      {
+        "key": "animateWorking",
+        "type": "boolean",
+        "label": "Spin the glyph while a session is working",
+        "defaultValue": true
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 1,
+        "max": 300,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "doneWindowSec",
+        "type": "integer",
+        "label": "How long a finished session keeps reading as done (seconds)",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300
+      },
+      {
+        "key": "showLabel",
+        "type": "boolean",
+        "label": "Show the session count next to the icon",
+        "defaultValue": true
+      }
+    ]
+  }
+}

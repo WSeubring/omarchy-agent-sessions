@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Every agent the herdr multiplexer hosts, whatever kind it is.
+#
+# herdr tracks agent kind, working directory and a status whose vocabulary
+# (idle/working/blocked/done) is the same one this widget uses, so it covers
+# agents that keep no state of their own — and it is the only source that knows
+# about a session with no window attached.
+set -uo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/lib/collector.sh"
+
+command -v herdr >/dev/null 2>&1 || { echo '[]'; exit 0; }
+
+snapshot=$(herdr api snapshot 2>/dev/null) || { echo '[]'; exit 0; }
+
+# The snapshot has no pids, and the pid is what lets a herdr sighting merge with
+# the one an agent's own collector produced — a session id only exists once the
+# agent has written its first transcript line. One extra call per agent pane.
+pids='{}'
+for pane in $(jq -r '.result.snapshot.agents[]?.pane_id // empty' <<<"$snapshot"); do
+  pid=$(herdr pane process-info --pane "$pane" 2>/dev/null |
+    jq -r '.result.process_info.foreground_processes[0].pid // empty')
+  [[ -n $pid ]] || continue
+  pids=$(jq -c --arg pane "$pane" --argjson pid "$pid" '. + {($pane): $pid}' <<<"$pids")
+done
+
+# dir shortening happens per record, so hand jq the home path to work with.
+jq -c --arg home "$HOME" --argjson pids "$pids" '
+  def shorten:
+    sub("^" + $home + "/Development/"; "")
+    | sub("^" + $home + "$"; "~")
+    | sub("^" + $home + "/"; "~/");
+
+  [ .result.snapshot.agents[]? | select(.agent != null) | {
+      agent: .agent,
+      priority: 1,
+      sessionId: (.agent_session.value // null),
+      # pi and friends identify a session by transcript path; that is a join key,
+      # not a label, so the pane id is the readable name for those.
+      name: (if (.agent_session.kind // "") == "id" then .agent_session.value else .pane_id end),
+      title: (.terminal_title_stripped // .terminal_title // "untitled"),
+      cwd: (.foreground_cwd // .cwd // ""),
+      dir: ((.foreground_cwd // .cwd // "") | shorten),
+      pid: ($pids[.pane_id] // null),
+      paneId: .pane_id,
+      tabId: .tab_id,
+      workspaceId: .workspace_id,
+      host: "herdr",
+      raw: .agent_status,
+      # "unknown" means herdr sees a pane it cannot read a status from; idle is
+      # the honest reading, since a working agent is what it detects reliably.
+      state: (if .agent_status == "unknown" then "idle" else (.agent_status // "idle") end),
+      ageSec: 0
+    } ]
+' <<<"$snapshot" 2>/dev/null || echo '[]'

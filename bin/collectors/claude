@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Claude Code sessions, from the peer-session records the CLI maintains.
+#
+# ~/.claude/sessions/<pid>.json carries a real status field, which is why Claude
+# is the one agent here that can report "blocked" without a multiplexer.
+set -uo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/lib/collector.sh"
+
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SESSION_DIR="$CLAUDE_DIR/sessions"
+PROJECT_DIR="$CLAUDE_DIR/projects"
+# Idle sessions that only just stopped working read as "done" rather than idle.
+DONE_WINDOW_SEC="${DONE_WINDOW_SEC:-300}"
+
+[[ -d $SESSION_DIR ]] || { echo '[]'; exit 0; }
+
+# The transcript lives under a slug of the cwd; the same session id can appear in
+# several project dirs after a /cwd change, so take the most recently written.
+transcript_for() {
+  newest "$PROJECT_DIR"/*/"$1.jsonl"
+}
+
+# ai-title is rewritten on every turn, so the last one in the file wins; a
+# session that has not been titled yet falls back to its last prompt.
+title_for() {
+  local file=$1
+  [[ -n $file && -f $file ]] || return 0
+  tail -c 400000 "$file" 2>/dev/null | grep -o '"aiTitle":"[^"]*"' | tail -1 |
+    sed 's/^"aiTitle":"//; s/"$//'
+}
+
+prompt_for() {
+  local file=$1
+  [[ -n $file && -f $file ]] || return 0
+  tail -c 400000 "$file" 2>/dev/null | grep -o '"lastPrompt":"[^"]*"' | tail -1 |
+    sed 's/^"lastPrompt":"//; s/"$//'
+}
+
+now=$(date +%s)
+
+for rec in "$SESSION_DIR"/*.json; do
+  [[ -f $rec ]] || continue
+  pid=$(jq -r '.pid // empty' "$rec" 2>/dev/null)
+  [[ -n $pid ]] || continue
+  # A record outlives a crashed CLI; only report processes that still exist.
+  alive "$pid" || continue
+
+  id=$(jq -r '.sessionId // empty' "$rec")
+  file=$(transcript_for "$id")
+  title=$(title_for "$file")
+  [[ -n $title ]] || title=$(prompt_for "$file")
+  cwd=$(jq -r '.cwd // ""' "$rec")
+
+  jq -c \
+    --arg title "$title" \
+    --arg dir "$(shorten_dir "$cwd")" \
+    --argjson now "$now" \
+    --argjson doneWindow "$DONE_WINDOW_SEC" \
+    '
+    ($now - ((.statusUpdatedAt // .updatedAt // 0) / 1000 | floor)) as $age
+    | (.status // "idle") as $raw
+    | {
+        agent: "claude",
+        priority: 0,
+        pid: .pid,
+        sessionId: .sessionId,
+        name: (.name // "session"),
+        kind: (.kind // "interactive"),
+        cwd: (.cwd // ""),
+        dir: $dir,
+        # Left empty when untitled, so a multiplexer title can fill the gap.
+        title: $title,
+        ageSec: $age,
+        startedSec: ($now - ((.startedAt // 0) / 1000 | floor)),
+        raw: $raw,
+        state: (
+          if $raw == "waiting" then "blocked"
+          elif $raw == "busy" or $raw == "shell" then "working"
+          elif $age <= $doneWindow then "done"
+          else "idle" end
+        )
+      }
+    ' "$rec"
+done | jq -s '.'

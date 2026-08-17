@@ -122,6 +122,12 @@ and the CLI shows up with its directory and title. Write a collector only when
 an agent keeps state worth reading that neither its window title nor herdr
 exposes.
 
+The same binary sometimes runs as a background service rather than a session —
+`claude --chrome-native-host`, the host behind the Chrome extension, sits in the
+browser and would otherwise show up as a row titled after the current tab. Those
+are matched by cmdline and dropped; `AGENT_SESSIONS_INCLUDE_HELPERS=1` shows
+them again.
+
 ## Titles
 
 Claude names its own sessions; most agents do not, so a row would read

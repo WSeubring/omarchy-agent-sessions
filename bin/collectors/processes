@@ -35,6 +35,24 @@ AGENT_PROCESSES=(
   aider:aider
 )
 
+# Not every process wearing an agent's name is a session. A browser extension
+# host is the same binary run as a background service: it has no prompt, no
+# terminal and no work of its own, so it is dropped unless asked for.
+# AGENT_SESSIONS_INCLUDE_HELPERS=1 shows them again.
+IGNORE_CMDLINE=(
+  --chrome-native-host
+)
+INCLUDE_HELPERS="${AGENT_SESSIONS_INCLUDE_HELPERS:-0}"
+
+is_helper() {
+  local cmdline pattern
+  cmdline=$(tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null) || return 1
+  for pattern in "${IGNORE_CMDLINE[@]}"; do
+    [[ $cmdline == *"$pattern"* ]] && return 0
+  done
+  return 1
+}
+
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/agent-sessions/processes.conf"
 if [[ -f $CONF ]]; then
   while IFS= read -r line; do
@@ -82,6 +100,8 @@ for entry in "${AGENT_PROCESSES[@]}"; do
     # for; a shell wearing the name is not the agent.
     exe=$(basename "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" 2>/dev/null)
     [[ $exe == bash || $exe == sh || $exe == dash || $exe == zsh || $exe == jq ]] && continue
+
+    if [[ $INCLUDE_HELPERS != 1 ]] && is_helper "$pid"; then continue; fi
 
     cwd=$(cwd_of "$pid")
     [[ -n $cwd ]] || continue

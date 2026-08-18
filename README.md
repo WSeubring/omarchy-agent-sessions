@@ -3,6 +3,9 @@
 [![License: MIT](https://img.shields.io/github/license/WSeubring/omarchy-agent-sessions)](LICENSE)
 ![Scope: personal](https://img.shields.io/badge/scope-personal-blue)
 
+> **Disclaimer:** vibe-coded for my own machine. Personal use, no support,
+> no guarantees - read the code before you run it.
+
 Every coding-agent session running on this machine, in the [Omarchy](https://omarchy.org)
 bar: what state it is in, which directory it runs in, and what it is working on.
 The widget leaves the bar entirely when nothing is running.

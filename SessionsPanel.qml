@@ -80,23 +80,35 @@ Panel {
     ? spinnerFrames[spinnerFrame % 4]
     : "●"
 
+  // The bar label is a list of {text, color} runs, not markup: the bar's
+  // WidgetButton paints its label as plain text, so a <font> tag would show up
+  // verbatim. Each run is drawn as its own Text item below.
   function paint(text, color) {
-    return "<font color=\"" + String(color) + "\">" + text + "</font>"
+    return ({ text: String(text), color: String(color) })
+  }
+
+  function joinRuns(parts, sep) {
+    var out = []
+    for (var i = 0; i < parts.length; i++) {
+      if (i > 0) out.push(paint(sep, root.dim))
+      out.push(parts[i])
+    }
+    return out
   }
 
   // Idle is the resting state of every session, so counting it earns no width
   // in the bar unless it is the only thing left to say.
-  function groupsLabel() {
+  function groupsRuns() {
     var parts = []
-    if (sessions.blocked.length > 0) parts.push(paint("󰀦" + sessions.blocked.length, root.urgent))
+    if (sessions.blocked.length > 0) parts.push(paint("\u{f0026}" + sessions.blocked.length, root.urgent))
     if (sessions.working.length > 0) parts.push(paint(workingGlyph + sessions.working.length, root.foreground))
-    if (sessions.done.length > 0) parts.push(paint("󰄬" + sessions.done.length, root.foreground))
+    if (sessions.done.length > 0) parts.push(paint("\u{f012c}" + sessions.done.length, root.foreground))
     if (root.showIdleGroup || parts.length === 0)
-      parts.push(paint("○" + sessions.idle.length, root.dim))
-    return "󰚩 " + parts.join("  ")
+      parts.push(paint("\u25cb" + sessions.idle.length, root.dim))
+    return [paint("\u{f06a9} ", root.foreground)].concat(joinRuns(parts, "  "))
   }
 
-  function dotsLabel() {
+  function dotsRuns() {
     var out = []
     var shown = Math.min(sessions.count, root.maxDots)
     for (var i = 0; i < shown; i++) {
@@ -106,25 +118,40 @@ Panel {
     }
     if (sessions.count > shown) out.push(paint("+" + (sessions.count - shown), root.dim))
     // Thin spaces: the glyphs merge into a smear when they sit flush.
-    return "󰚩 " + out.join("&#8202;")
+    return [paint("\u{f06a9} ", root.foreground)].concat(joinRuns(out, "\u200a"))
   }
 
-  function minimalLabel() {
+  function minimalRuns() {
     // One glyph, coloured by the state that most deserves your attention.
-    if (sessions.blocked.length > 0) return paint("󰚩", root.urgent)
-    if (sessions.working.length > 0) return paint("󰚩", root.foreground)
-    return paint("󰚩", root.dim)
+    if (sessions.blocked.length > 0) return [paint("\u{f06a9}", root.urgent)]
+    if (sessions.working.length > 0) return [paint("\u{f06a9}", root.foreground)]
+    return [paint("\u{f06a9}", root.dim)]
   }
 
+  function countRuns() {
+    var attention = sessions.blocked.length > 0
+    return [
+      paint("\u{f06a9}  ", attention ? root.urgent : root.foreground),
+      paint(attention ? sessions.blocked.length + "!" : String(sessions.count),
+            attention ? root.urgent : root.foreground)
+    ]
+  }
+
+  function barRuns() {
+    if (root.vertical || !root.showLabel) return [paint("\u{f06a9}", root.foreground)]
+    if (root.indicatorStyle === "minimal") return minimalRuns()
+    if (root.indicatorStyle === "dots") return dotsRuns()
+    if (root.indicatorStyle === "count") return countRuns()
+    return groupsRuns()
+  }
+
+  // Plain text of the same runs: what the button measures itself against, and
+  // what the label IPC call reports.
   function barLabel() {
-    if (root.vertical || !root.showLabel) return "󰚩"
-    if (root.indicatorStyle === "minimal") return minimalLabel()
-    if (root.indicatorStyle === "dots") return dotsLabel()
-    if (root.indicatorStyle === "count")
-      return sessions.blocked.length > 0
-        ? "󰚩  " + sessions.blocked.length + "!"
-        : "󰚩  " + sessions.count
-    return groupsLabel()
+    var runs = barRuns()
+    var out = ""
+    for (var i = 0; i < runs.length; i++) out += runs[i].text
+    return out
   }
 
   onOpenedChanged: if (opened) {
@@ -242,9 +269,10 @@ Panel {
     bar: root.bar
     // Blocked count wins the label; otherwise the number of live sessions.
     text: root.barLabel()
-    // The label paints its own colours, so leave the active tint to the styles
-    // that draw a single uncoloured glyph.
-    useActiveColor: root.indicatorStyle === "count"
+    // The runs below paint their own colours; the plain text stays for sizing,
+    // so the button keeps measuring itself against what is actually drawn.
+    labelVisible: false
+    useActiveColor: false
     active: sessions.needsAttention
     dimmed: sessions.working.length === 0 && sessions.blocked.length === 0
     fontSize: Style.font.caption
@@ -259,6 +287,23 @@ Panel {
       NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutSine }
       onStopped: button.opacity = 1
     }
+    Row {
+      anchors.centerIn: parent
+      spacing: 0
+      Repeater {
+        model: root.barRuns()
+        Text {
+          required property var modelData
+          text: modelData.text
+          color: modelData.color
+          font.family: button.fontFamily
+          font.pixelSize: button.fontSize
+          renderType: Text.NativeRendering
+          verticalAlignment: Text.AlignVCenter
+        }
+      }
+    }
+
     tooltipText: {
       if (sessions.count === 0) return "No agent sessions running"
       var parts = []

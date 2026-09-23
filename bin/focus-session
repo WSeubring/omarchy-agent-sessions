@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Bring a Claude session on screen.
 #
-# Two hosts, two routes:
+# Three hosts, three routes:
 #   window — the session runs under a terminal, so walk up the process tree until
 #            a pid matches a Hyprland client and focus that window.
 #   herdr  — the session hangs off `herdr server` and may have no window at all;
 #            focus the herdr pane, then focus (or attach) a herdr client.
+#   tmux   - the walk ends at `tmux: server` instead of a window; select the
+#            pane, then focus a client showing it (or attach one).
 set -uo pipefail
 
 [[ -n ${FOCUS_DEBUG:-} ]] && { exec 2>>/tmp/focus-session.log; set -x; }
@@ -71,14 +73,86 @@ if [[ -n $pane ]]; then
   exit 1
 fi
 
-for _ in 1 2 3 4 5 6 7 8; do
-  [[ -n $pid && $pid != 1 ]] || exit 1
-  addr=$(address_for_pid "$pid")
-  if [[ -n $addr ]]; then
+# The window, if any, of the terminal a process runs under.
+window_of() {
+  local p=$1 addr
+  for _ in 1 2 3 4 5 6 7 8; do
+    [[ -n $p && $p != 1 ]] || return 1
+    addr=$(address_for_pid "$p")
+    [[ -n $addr ]] && { printf '%s' "$addr"; return 0; }
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+  done
+  return 1
+}
+
+if addr=$(window_of "$pid"); then
+  focus_window "$addr"
+  exit 0
+fi
+
+# Not under a window: the agent may run in a tmux pane, whose process is a child
+# of the detached tmux server rather than of any terminal.
+ancestors=()
+p=$pid
+server=
+while [[ -n $p && $p != 1 && $p != 0 ]]; do
+  ancestors+=("$p")
+  [[ $(cat "/proc/$p/comm" 2>/dev/null) == "tmux: server" ]] && { server=$p; break; }
+  p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+done
+[[ -n $server ]] && command -v tmux >/dev/null 2>&1 || exit 1
+
+# The server's socket is not in its pid, so ask every socket who serves it.
+sock=
+for s in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/*; do
+  [[ -S $s ]] || continue
+  [[ $(tmux -S "$s" display-message -p '#{pid}' 2>/dev/null) == "$server" ]] && { sock=$s; break; }
+done
+[[ -n $sock ]] || exit 1
+t() { tmux -S "$sock" "$@"; }
+
+target=
+while read -r ppid pane_id; do
+  for a in "${ancestors[@]}"; do
+    [[ $a == "$ppid" ]] && { target=$pane_id; break 2; }
+  done
+done < <(t list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)
+[[ -n $target ]] || exit 1
+
+session=$(t display-message -p -t "$target" '#{session_name}' 2>/dev/null)
+t select-window -t "$target" 2>/dev/null
+t select-pane -t "$target" 2>/dev/null
+
+# Prefer a client already on that session; any other client can be switched over.
+tmux_client_window() {
+  local cpid ctty csess addr
+  while read -r cpid ctty csess; do
+    [[ $csess == "$session" ]] || continue
+    addr=$(window_of "$cpid") && { printf '%s' "$addr"; return 0; }
+  done < <(t list-clients -F '#{client_pid} #{client_tty} #{session_name}' 2>/dev/null)
+  while read -r cpid ctty csess; do
+    addr=$(window_of "$cpid") || continue
+    t switch-client -c "$ctty" -t "$target" 2>/dev/null
+    printf '%s' "$addr"
+    return 0
+  done < <(t list-clients -F '#{client_pid} #{client_tty} #{session_name}' 2>/dev/null)
+  return 1
+}
+
+if addr=$(tmux_client_window); then
+  focus_window "$addr"
+  exit 0
+fi
+
+# uwsm expands `$` in argv, which rules out tmux's `$N` session ids here.
+omarchy-launch-terminal tmux -S "$sock" attach-session -t "=$session" >/dev/null 2>&1 &
+for _ in $(seq 1 20); do
+  sleep 0.25
+  clients=$(hyprctl -j clients 2>/dev/null) || break
+  if addr=$(tmux_client_window); then
     focus_window "$addr"
     exit 0
   fi
-  pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
 done
 
 exit 1

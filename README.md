@@ -189,6 +189,20 @@ one:
    for the window to map before focusing it and re-asserting the pane, since the
    client picks its own focus on attach.
 
+## tmux-hosted sessions
+
+An agent in a tmux pane is a child of the detached `tmux: server`, so the pid
+walk finds no window either. When the walk hits that server, focusing:
+
+1. Finds the server's socket (every socket in `/tmp/tmux-$UID/` is asked for its
+   pid), then the pane whose process is an ancestor of the session.
+2. Selects that pane's window and pane.
+3. Focuses the terminal of a client already on that session, else switches any
+   attached client over to it.
+4. With no client at all, opens a terminal on `tmux attach -t =<session>` and
+   waits for it to map. The name rather than the `$N` id, because uwsm expands
+   `$` in the command line.
+
 ## Demo fixture
 
 Drop a `demo.json` next to this README (same shape the collectors emit) and

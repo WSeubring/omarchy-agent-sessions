@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "wseubring.sessions",
   "name": "Agent Sessions",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Wesley Seubring",
   "license": "MIT",
   "description": "Live coding-agent sessions (Claude Code, pi, anything herdr hosts) in the Omarchy bar: state, directory and title.",
